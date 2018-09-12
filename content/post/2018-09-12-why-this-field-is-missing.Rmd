@@ -33,7 +33,7 @@ Before I go into the details, I would say my experiences are based on insurance 
 
 I'll use the next post to explain what I have tried when facing with all those missing data and consideration involved but at least the new website is no longer empty!
 
-Random photo time (mainly to see how it looks):
+Random photo time (Can you guess where the photo was taken?):
 
 ![Tree not in a random forest](/post/2018-09-12-why-this-field-is-missing_files/IMG_2008.jpg)
 
