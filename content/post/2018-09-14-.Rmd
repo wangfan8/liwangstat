@@ -1,5 +1,5 @@
 ---
-title: 豆瓣读书历史数据分析
+title: 豆瓣个人读书历史数据分析
 author: Li Wang
 date: '2018-09-14'
 slug: ''
@@ -9,3 +9,396 @@ tags:
   - reading
   - douban
 ---
+
+作为一个豆瓣老用户，分析一下自己在豆瓣上标记下来的书感觉是一件很自然的事情。虽然豆瓣的API似乎更新得不是很勤（最近更是登不上去），但是还是比自己抓网页容易多了。
+
+先做一些准备：
+```{r message = FALSE}
+library(httr)
+library(here)
+library(tidyverse)
+library(purrr)
+library(tidytext)
+library(lubridate)
+library(wordcloud2)
+```
+httr包用来和豆瓣API交互。here包可以帮助管理文件夹结构，这样如果需要把自己的RStudio Project搬到另一个地方也不用更新静态文件夹地址。tidyverse提供各种方便处理数据的工作流。purrr用来flatten nested list。tidytext用于后面的一些文本分析。lubridate用来处理时间日期信息。wordcloud2用来画word cloud.
+
+```{r}
+start <- seq(from = 0, to = 620, by = 20) 
+```
+
+由于豆瓣一次只允许取20本书，所以需要提前准备好一个数列。在这里我知道我现在标记过的书是626本，所以选择了这个结尾。如果想要更加通用的代码，需要从豆瓣读出个人读书总数(没在API里面找到)。
+
+```{r}
+common_string <- "https://api.douban.com/v2/book/user/schweik/collections?start="
+urls <- unlist(lapply(common_string, paste, start, sep=""))
+```
+
+如果想要分析别的用户，唯一需要改的的就是用户ID：schweik。用户ID可以在自己的豆瓣页面找到（从首页进入我的豆瓣）。
+
+![](/post/2018-09-14-_files/douban_user_id.png){width=100% height=100%}
+
+```{r eval = FALSE}
+book_contents <- lapply(lapply(urls, GET), content)
+```
+这一步先发送一系列请求，然后用httr里面的content函数取得内容。这是最耗时的一步。
+
+```{r eval = FALSE}
+file_path <- paste(here::here(), "/data/li_douban_book_extract", sep="") 
+save(book_contents, file = file_path)
+```
+可以把原始文件存下来。
+
+```{r eval = FALSE}
+book_contents <- purrr::flatten(book_contents)
+
+# we will need every 4th element as the book info
+book <- book_contents[seq(from = 4,
+                           to   = length(book_contents),
+                           by   = 4)]
+
+book <- flatten(book)
+
+number_books <- length(book)
+
+df_book <- data_frame(status      = character(length         = number_books),
+                      updated     = as.POSIXct(rep("2017-01-01", number_books)),
+                      numRaters   = numeric(  length         = number_books),
+                      averageRate = numeric(  length         = number_books),
+                      author      = character(length         = number_books),
+                      binding     = character(length         = number_books),
+                      pages       = numeric(  length         = number_books),
+                      publisher   = character(length         = number_books),
+                      title       = character(length         = number_books),
+                      url         = character(length         = number_books),
+                      author_info = character(length         = number_books),
+                      summary     = character(length         = number_books),
+                      price       = character(length         = number_books),
+                      isbn13      = character(length         = number_books),
+                      isbn10      = character(length         = number_books))
+
+for (i in 1:number_books){
+  df_book[i, "status"]      = book[[i]]$status
+  df_book[i, "updated"]     = ymd_hms(book[[i]]$updated)
+  df_book[i, "numRaters"]   = book[[i]]$book$rating$numRaters
+  df_book[i, "averageRate"] = book[[i]]$book$rating$average
+  df_book[i, "author"]      = paste(unlist(book[[i]]$book$author)
+                                    , collapse = "; ")
+  df_book[i, "binding"]     = book[[i]]$book$binding
+  df_book[i, "pages"]       = as.numeric(book[[i]]$book$pages)
+  df_book[i, "publisher"]   = book[[i]]$book$publisher
+  df_book[i, "title"]       = book[[i]]$book$title
+  df_book[i, "url"]         = book[[i]]$book$alt
+  df_book[i, "author_info"] = book[[i]]$book$author_intro
+  df_book[i, "summary"]     = book[[i]]$book$summary
+  df_book[i, "price"]       = book[[i]]$book$price
+  df_book[i, "isbn13"]      = paste(c(book[[i]]$book$isbn13, 
+                                      ""), 
+                                      collapse = "")
+  df_book[i, "isbn10"]      = book[[i]]$book$isbn10
+}
+
+```
+
+但是现在的信息并不是很容易分析的格式(nested list)，所以需要把这些信息转换成data_frame。这里取出的不是所有信息，只是我觉得有意思的。另外一点就是我用了for loop，由于这个loop并没有动态改变R对象，应该没有太多效率上的问题。代码不好看是真的（试了一会，没找到更好的办法，如果有人知道，敬请指教）。
+
+整理好的csv文件可以在这里下载：[Github Link](https://raw.githubusercontent.com/wangfan8/douban/master/data/li_douban_book.csv).
+
+数据整理好了，终于可以开始做一些分析。
+
+```{r message=FALSE}
+file_path <- paste(here::here(), "/li_douban_book.csv", sep="") 
+data <- read_csv(file_path)
+
+# filter out all chinese books (at least summary contains chinese)
+data$chinese_ind <- 0
+data[grep("[\u4e00-\u9fa5]", data$summary),]$chinese_ind <- 1
+```
+
+把中文书和非中文书（主要是英文书）区分开（中文书定义成简介里面有中文）。
+
+```{r}
+# clean up some common writer names
+data %>% 
+  mutate(author = if_else(grepl("村上春树"
+                                , author)
+                          , "Haruki Murakami"
+                          , author)) %>%
+  mutate(author = if_else(grepl("凡尔纳"
+                                , author)
+                          , "Jules Verne"
+                          , author)) %>%
+  mutate(author = if_else(grepl("屠格涅夫"
+                                , author)
+                          , "屠格涅夫"
+                          , author)) %>%
+  mutate(author = if_else(grepl("Tolkien"
+                                , author)
+                          , "J. R. R. Tolkien"
+                          , author)) %>%
+  mutate(author = if_else(grepl("George", author) & grepl("Martin", author)
+                          , "George R. R. Martin"
+                          , author)) %>%
+  mutate(author = if_else(grepl("Rowling"
+                                , author)
+                          , "J. K. Rowling"
+                          , author)) %>%
+  mutate(author = if_else(grepl("安妮·普鲁克斯"
+                                , author)
+                          , "Annie Proulx"
+                          , author)) ->
+  data
+```
+
+清理一些作者名。
+
+```{r}
+# count the number of characters in each summary
+data %>% mutate(summary_length = nchar(summary)) -> data
+
+# first limited to summary length > 50 and exclude chinese title
+
+data %>% filter(summary_length >=50 
+                & chinese_ind == 0) -> book_summary
+
+```
+分析一下至少有50个字母的英文摘要。
+
+```{r message = FALSE}
+custom_stop <- tibble(word = c("book", "books"))
+
+# create word cloud
+
+book_summary %>% 
+  select(title, summary, author) %>%
+  unnest_tokens(word, summary) %>%
+  anti_join(stop_words) %>%
+  anti_join(custom_stop) %>%
+  count(word, sort = TRUE) %>%
+  top_n(200) %>%
+  rename(freq = n) %>%
+  wordcloud2()
+```
+
+画个wordcloud。满眼的故事啊！
+
+不过摘要里面还是文字太少，尝试了一些其他的文本分析，都没有很好的结果。现在再来做一些对于所有书籍的分析。
+
+先看看每年读了多少中文和英文书:
+
+```{r}
+# book read in each year by language 
+# filter out 2008 due to retroactive marking
+data %>% 
+  filter(year(updated) != 2008 & status == 'read') %>%
+  ggplot(aes(factor(year(updated)), fill = factor(chinese_ind))) +
+  geom_bar()
+```
+
+这里把2008筛掉是因为刚开始用豆瓣时标了不少小时候读的书。总的来说中文书比例在减小，最近买了一个新Kindle，绑定在中国亚马逊上希望能够改变一下这个趋势。
+
+每年读了多少页书呢？
+
+```{r}
+# pages of book read
+data %>% 
+  filter(year(updated) != 2008 & status == 'read' & !is.na(pages) & pages > 0) %>%
+  mutate(read_year = year(updated)) %>%
+  group_by(read_year)%>%
+  summarise(total_page = sum(pages, na.rm = TRUE)) %>%
+  ggplot(aes(x = read_year, y = total_page)) +
+  geom_line()
+```
+
+2015特别少（书的数量也少），不知道为什么。另外能看出来2013年博士毕业以后，总体来说读书时间少了。
+
+平均每本书多少页呢？
+
+```{r}
+data %>% 
+  filter(year(updated) != 2008 & status == 'read' & !is.na(pages) & pages > 0) %>%
+  mutate(read_year = year(updated)) %>%
+  group_by(read_year)%>%
+  summarise(average_page = sum(pages, na.rm = TRUE)/n()) %>%
+  ggplot(aes(x = read_year, y = average_page)) +
+  geom_line()
+```
+
+还是一个下降趋势？
+
+仔细看看分布：
+
+```{r}
+# page distribution
+data %>% 
+  filter(year(updated) != 2008 & status == 'read' & !is.na(pages) & pages > 0) %>%
+  mutate(read_year = year(updated)) %>%
+  group_by(read_year)%>%
+  ggplot(aes(x = read_year, y = pages, group = read_year)) +
+  geom_boxplot()
+```
+
+2017看了一本好厚的书（左传附注）。2010那一堆厚书是金庸武侠。
+
+分语言看看书的厚度：
+
+```{r}
+# page distribution by language
+data %>% 
+  filter(year(updated) != 2008 & status == 'read' & !is.na(pages) & pages > 0) %>%
+  mutate(read_year = year(updated)) %>%
+  group_by(read_year, chinese_ind)%>%
+  ggplot(aes(x = read_year
+             , y = pages
+             , group = read_year)) +
+  geom_boxplot() +
+  facet_grid(col = vars(chinese_ind))
+
+```
+
+看看我看谁的书最多：
+
+```{r message = FALSE}
+# top 20 authors
+data %>% 
+  filter(status == 'read' & !is.na(author)) %>%
+  group_by(author) %>%
+  tally() %>%
+  top_n(20) %>%
+  mutate(author = reorder(author, n)) %>%
+  ggplot(aes(x = author, y = n)) +
+  geom_col() +
+  coord_flip() +
+  theme_grey(base_family = "STKaiti")
+```
+村上啊村上。
+
+最爱作家书厚度？
+
+```{r message=FALSE}
+# top 20 authors page distribution
+data %>% 
+  filter(status == 'read' & !is.na(author)) %>%
+  group_by(author) %>%
+  tally() %>%
+  top_n(20) %>%
+  mutate(author = reorder(author, n)) %>%
+  mutate(author = as.character(author)) %>%
+  left_join(data, by = "author") %>%
+  filter(!is.na(pages) & pages > 0) -> data_fav_author
+
+data_fav_author %>%
+  group_by(author)%>%
+  ggplot(aes(x = author, y = pages, group = author)) +
+  geom_boxplot() +
+  coord_flip() +
+  theme_grey(base_family = "STKaiti")
+```
+中文书和英文书厚度区别？
+
+```{r}
+# Is there a difference between chinese book number of pages and others(mainly english)?
+data %>% 
+  filter(status == 'read' & !is.na(pages) & pages > 0) %>%
+  mutate(chinese_ind_cat = if_else(chinese_ind == 1
+                                   , "Chinese"
+                                   , "Others")) %>%
+  group_by(chinese_ind_cat) %>%
+  ggplot(aes(x = chinese_ind_cat, group = chinese_ind_cat, y = pages)) +
+  geom_violin()
+```
+
+看来看中文长篇多。
+
+中文书和英文书评价数量区别？
+
+```{r message = FALSE}
+# Is there a difference between chinese book number of reviews and others(mainly english)?
+data %>% 
+  filter(status == 'read' & !is.na(numRaters) & numRaters > 0) %>%
+  mutate(chinese_ind_cat = if_else(chinese_ind == 1
+                                   , "Chinese"
+                                   , "Others")) %>%
+  group_by(chinese_ind_cat) %>%
+  ggplot(aes(x = chinese_ind_cat, group = chinese_ind_cat, y = numRaters)) +
+  geom_boxplot()
+
+data %>% 
+  filter(status == 'read' & !is.na(numRaters) & numRaters > 0) %>%
+  mutate(chinese_ind_cat = if_else(chinese_ind == 1
+                                   , "Chinese"
+                                   , "Others")) %>%
+  group_by(chinese_ind_cat) %>%
+  summarise(trimmedMean = mean(numRaters, trim = 0.05),
+            quantile25 = quantile(numRaters, probs = 0.25),
+            quantile50 = quantile(numRaters, probs = 0.50),
+            quantile75 = quantile(numRaters, probs = 0.75))
+```
+
+作为一个中文网站，还是评中文书的人多。
+
+平均评价那么有区别吗？
+
+```{r}
+# Is there a difference between chinese book average reviews and others(mainly english)?
+data %>% 
+  filter(status == 'read' & !is.na(averageRate) & numRaters > 10) %>%
+  mutate(chinese_ind_cat = if_else(chinese_ind == 1
+                                   , "Chinese"
+                                   , "Others")) %>%
+  group_by(chinese_ind_cat) %>%
+  ggplot(aes(x = chinese_ind_cat, group = chinese_ind_cat, y = averageRate)) +
+  geom_boxplot()
+
+data %>% 
+  filter(status == 'read' & !is.na(averageRate) & numRaters > 10) %>%
+  mutate(chinese_ind_cat = if_else(chinese_ind == 1
+                                   , "Chinese"
+                                   , "Others")) %>%
+  group_by(chinese_ind_cat) %>%
+  summarise(mean = mean(averageRate),
+            quantile25 = quantile(averageRate, probs = 0.25),
+            quantile50 = quantile(averageRate, probs = 0.50),
+            quantile75 = quantile(averageRate, probs = 0.75))
+
+```
+
+
+貌似我看的书评价都还挺高，外文略高些。
+
+书的厚度和评价有关吗？
+
+```{r}
+# ralationship between number of pages and average rate
+
+data %>% 
+  filter(status == 'read' 
+         & !is.na(averageRate) 
+         & numRaters > 10 
+         & !is.na(pages)
+         & pages > 0) %>%
+  mutate(chinese_ind_cat = if_else(chinese_ind == 1
+                                   , "Chinese"
+                                   , "Others")) %>%
+  group_by(chinese_ind_cat) %>%
+  ggplot(aes(x = pages, y = averageRate, weight = sqrt(numRaters))) +
+  geom_point(aes(size = sqrt(numRaters)
+                 , color = chinese_ind_cat)) +
+  geom_smooth(span = 0.4)
+
+```
+对于比较薄的的书(<1000页)， 似乎有一个最高点在500页处。对于厚书，数据太少，但是貌似有上升趋势。也许决定看并且评价厚书的人本身就比较喜欢那些书吧（否则不是自我折磨）。
+
+豆瓣数据我觉得最缺的还是更好的分类，有了更好的图书分类，也许能有更多有趣的分析。
+
+
+
+
+
+
+
+
+
+
+

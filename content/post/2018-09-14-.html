@@ -1,5 +1,5 @@
 ---
-title: 豆瓣读书历史数据分析
+title: 豆瓣个人读书历史数据分析
 author: Li Wang
 date: '2018-09-14'
 slug: ''
@@ -10,6 +10,318 @@ tags:
   - douban
 ---
 
+<script src="/rmarkdown-libs/htmlwidgets/htmlwidgets.js"></script>
+<link href="/rmarkdown-libs/wordcloud2/wordcloud.css" rel="stylesheet" />
+<script src="/rmarkdown-libs/wordcloud2/wordcloud2-all.js"></script>
+<script src="/rmarkdown-libs/wordcloud2/hover.js"></script>
+<script src="/rmarkdown-libs/wordcloud2-binding/wordcloud2.js"></script>
 
 
+<p>作为一个豆瓣老用户，分析一下自己在豆瓣上标记下来的书感觉是一件很自然的事情。虽然豆瓣的API似乎更新得不是很勤（最近更是登不上去），但是还是比自己抓网页容易多了。</p>
+<p>先做一些准备：</p>
+<pre class="r"><code>library(httr)
+library(here)
+library(tidyverse)
+library(purrr)
+library(tidytext)
+library(lubridate)
+library(wordcloud2)</code></pre>
+<p>httr包用来和豆瓣API交互。here包可以帮助管理文件夹结构，这样如果需要把自己的RStudio Project搬到另一个地方也不用更新静态文件夹地址。tidyverse提供各种方便处理数据的工作流。purrr用来flatten nested list。tidytext用于后面的一些文本分析。lubridate用来处理时间日期信息。wordcloud2用来画word cloud.</p>
+<pre class="r"><code>start &lt;- seq(from = 0, to = 620, by = 20) </code></pre>
+<p>由于豆瓣一次只允许取20本书，所以需要提前准备好一个数列。在这里我知道我现在标记过的书是626本，所以选择了这个结尾。如果想要更加通用的代码，需要从豆瓣读出个人读书总数(没在API里面找到)。</p>
+<pre class="r"><code>common_string &lt;- &quot;https://api.douban.com/v2/book/user/schweik/collections?start=&quot;
+urls &lt;- unlist(lapply(common_string, paste, start, sep=&quot;&quot;))</code></pre>
+<p>如果想要分析别的用户，唯一需要改的的就是用户ID：schweik。用户ID可以在自己的豆瓣页面找到（从首页进入我的豆瓣）。</p>
+<div class="figure">
+<img src="/post/2018-09-14-_files/douban_user_id.png" style="width:100.0%" style="height:100.0%" />
 
+</div>
+<pre class="r"><code>book_contents &lt;- lapply(lapply(urls, GET), content)</code></pre>
+<p>这一步先发送一系列请求，然后用httr里面的content函数取得内容。这是最耗时的一步。</p>
+<pre class="r"><code>file_path &lt;- paste(here::here(), &quot;/data/li_douban_book_extract&quot;, sep=&quot;&quot;) 
+save(book_contents, file = file_path)</code></pre>
+<p>可以把原始文件存下来。</p>
+<pre class="r"><code>book_contents &lt;- purrr::flatten(book_contents)
+
+# we will need every 4th element as the book info
+book &lt;- book_contents[seq(from = 4,
+                           to   = length(book_contents),
+                           by   = 4)]
+
+book &lt;- flatten(book)
+
+number_books &lt;- length(book)
+
+df_book &lt;- data_frame(status      = character(length         = number_books),
+                      updated     = as.POSIXct(rep(&quot;2017-01-01&quot;, number_books)),
+                      numRaters   = numeric(  length         = number_books),
+                      averageRate = numeric(  length         = number_books),
+                      author      = character(length         = number_books),
+                      binding     = character(length         = number_books),
+                      pages       = numeric(  length         = number_books),
+                      publisher   = character(length         = number_books),
+                      title       = character(length         = number_books),
+                      url         = character(length         = number_books),
+                      author_info = character(length         = number_books),
+                      summary     = character(length         = number_books),
+                      price       = character(length         = number_books),
+                      isbn13      = character(length         = number_books),
+                      isbn10      = character(length         = number_books))
+
+for (i in 1:number_books){
+  df_book[i, &quot;status&quot;]      = book[[i]]$status
+  df_book[i, &quot;updated&quot;]     = ymd_hms(book[[i]]$updated)
+  df_book[i, &quot;numRaters&quot;]   = book[[i]]$book$rating$numRaters
+  df_book[i, &quot;averageRate&quot;] = book[[i]]$book$rating$average
+  df_book[i, &quot;author&quot;]      = paste(unlist(book[[i]]$book$author)
+                                    , collapse = &quot;; &quot;)
+  df_book[i, &quot;binding&quot;]     = book[[i]]$book$binding
+  df_book[i, &quot;pages&quot;]       = as.numeric(book[[i]]$book$pages)
+  df_book[i, &quot;publisher&quot;]   = book[[i]]$book$publisher
+  df_book[i, &quot;title&quot;]       = book[[i]]$book$title
+  df_book[i, &quot;url&quot;]         = book[[i]]$book$alt
+  df_book[i, &quot;author_info&quot;] = book[[i]]$book$author_intro
+  df_book[i, &quot;summary&quot;]     = book[[i]]$book$summary
+  df_book[i, &quot;price&quot;]       = book[[i]]$book$price
+  df_book[i, &quot;isbn13&quot;]      = paste(c(book[[i]]$book$isbn13, 
+                                      &quot;&quot;), 
+                                      collapse = &quot;&quot;)
+  df_book[i, &quot;isbn10&quot;]      = book[[i]]$book$isbn10
+}</code></pre>
+<p>但是现在的信息并不是很容易分析的格式(nested list)，所以需要把这些信息转换成data_frame。这里取出的不是所有信息，只是我觉得有意思的。另外一点就是我用了for loop，由于这个loop并没有动态改变R对象，应该没有太多效率上的问题。代码不好看是真的（试了一会，没找到更好的办法，如果有人知道，敬请指教）。</p>
+<p>整理好的csv文件可以在这里下载：<a href="https://raw.githubusercontent.com/wangfan8/douban/master/data/li_douban_book.csv">Github Link</a>.</p>
+<p>数据整理好了，终于可以开始做一些分析。</p>
+<pre class="r"><code>file_path &lt;- paste(here::here(), &quot;/li_douban_book.csv&quot;, sep=&quot;&quot;) 
+data &lt;- read_csv(file_path)
+
+# filter out all chinese books (at least summary contains chinese)
+data$chinese_ind &lt;- 0
+data[grep(&quot;[\u4e00-\u9fa5]&quot;, data$summary),]$chinese_ind &lt;- 1</code></pre>
+<p>把中文书和非中文书（主要是英文书）区分开（中文书定义成简介里面有中文）。</p>
+<pre class="r"><code># clean up some common writer names
+data %&gt;% 
+  mutate(author = if_else(grepl(&quot;村上春树&quot;
+                                , author)
+                          , &quot;Haruki Murakami&quot;
+                          , author)) %&gt;%
+  mutate(author = if_else(grepl(&quot;凡尔纳&quot;
+                                , author)
+                          , &quot;Jules Verne&quot;
+                          , author)) %&gt;%
+  mutate(author = if_else(grepl(&quot;屠格涅夫&quot;
+                                , author)
+                          , &quot;屠格涅夫&quot;
+                          , author)) %&gt;%
+  mutate(author = if_else(grepl(&quot;Tolkien&quot;
+                                , author)
+                          , &quot;J. R. R. Tolkien&quot;
+                          , author)) %&gt;%
+  mutate(author = if_else(grepl(&quot;George&quot;, author) &amp; grepl(&quot;Martin&quot;, author)
+                          , &quot;George R. R. Martin&quot;
+                          , author)) %&gt;%
+  mutate(author = if_else(grepl(&quot;Rowling&quot;
+                                , author)
+                          , &quot;J. K. Rowling&quot;
+                          , author)) %&gt;%
+  mutate(author = if_else(grepl(&quot;安妮·普鲁克斯&quot;
+                                , author)
+                          , &quot;Annie Proulx&quot;
+                          , author)) -&gt;
+  data</code></pre>
+<p>清理一些作者名。</p>
+<pre class="r"><code># count the number of characters in each summary
+data %&gt;% mutate(summary_length = nchar(summary)) -&gt; data
+
+# first limited to summary length &gt; 50 and exclude chinese title
+
+data %&gt;% filter(summary_length &gt;=50 
+                &amp; chinese_ind == 0) -&gt; book_summary</code></pre>
+<p>分析一下至少有50个字母的英文摘要。</p>
+<pre class="r"><code>custom_stop &lt;- tibble(word = c(&quot;book&quot;, &quot;books&quot;))
+
+# create word cloud
+
+book_summary %&gt;% 
+  select(title, summary, author) %&gt;%
+  unnest_tokens(word, summary) %&gt;%
+  anti_join(stop_words) %&gt;%
+  anti_join(custom_stop) %&gt;%
+  count(word, sort = TRUE) %&gt;%
+  top_n(200) %&gt;%
+  rename(freq = n) %&gt;%
+  wordcloud2()</code></pre>
+<div id="htmlwidget-1" style="width:672px;height:480px;" class="wordcloud2 html-widget"></div>
+<script type="application/json" data-for="htmlwidget-1">{"x":{"word":["story","life","world","history","data","american","time","war","author","human","times","people","love","york","political","power","readers","brilliant","stories","family","century","lives","modern","prize","winning","account","country","powerful","president","read","america","analysis","city","edition","narrative","day","real","award","design","national","makes","set","born","epic","house","portrait","research","adams","battle","home","including","review","age","extraordinary","john","science","takes","writing","written","biography","death","jefferson","memoir","mother","personal","series","white","acclaimed","british","classic","collection","david","fast","father","nature","reading","remarkable","writer","learn","past","tale","thinking","understanding","united","crime","force","mind","writers","bestselling","characters","china","days","friends","funny","johnson","mccullough","moving","pulitzer","reader","rise","university","washington","winner","ability","art","decades","drama","economic","english","fascinating","fiction","future","george","information","military","nation","offers","paris","popular","presidency","robert","son","south","system","text","understand","based","beautiful","business","french","genius","harry","heart","introduction","literature","major","masterpiece","rich","roosevelt","students","vivid","wall","west","brings","career","compelling","development","discovery","drawing","historical","journey","kahneman","light","literary","methods","politics","private","public","python","social","statistical","woman","begins","england","events","features","found","ideas","insight","language","middle","questions","slow","theory","william","women","ambitious","army","called","change","chernow","common","complex","crucial","deeply","empire","essential","examples","famous","global","government","helped","india","living","models","mysterious","practical","saga","sense","stand","storytelling","street","style","success","tales","unique","volume"],"freq":[135,123,119,101,83,80,78,73,65,64,62,56,48,48,47,46,44,41,41,39,38,38,37,36,35,34,34,34,34,34,32,32,32,32,32,30,30,29,29,29,28,28,27,27,27,27,27,26,26,26,26,26,25,25,25,25,25,25,25,24,24,24,24,24,24,24,24,23,23,23,23,23,23,23,23,23,23,23,22,22,22,22,22,22,21,21,21,21,20,20,20,20,20,20,20,20,20,20,20,20,20,20,20,19,19,19,19,19,19,19,19,19,19,19,19,19,19,19,19,19,19,19,19,19,19,19,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,16,16,16,16,16,16,16,16,16,16,16,16,16,16,15,15,15,15,15,15,15,15,15,15,15,15,15,15,15,15,15,15,15,15,15,15,15,15,15,15,15,15,15,15,15],"fontFamily":"Segoe UI","fontWeight":"bold","color":"random-dark","minSize":0,"weightFactor":1.33333333333333,"backgroundColor":"white","gridSize":0,"minRotation":-0.785398163397448,"maxRotation":0.785398163397448,"shuffle":true,"rotateRatio":0.4,"shape":"circle","ellipticity":0.65,"figBase64":null,"hover":null},"evals":[],"jsHooks":{"render":[{"code":"function(el,x){\n                        console.log(123);\n                        if(!iii){\n                          window.location.reload();\n                          iii = False;\n\n                        }\n  }","data":null}]}}</script>
+<p>画个wordcloud。满眼的故事啊！</p>
+<p>不过摘要里面还是文字太少，尝试了一些其他的文本分析，都没有很好的结果。现在再来做一些对于所有书籍的分析。</p>
+<p>先看看每年读了多少中文和英文书:</p>
+<pre class="r"><code># book read in each year by language 
+# filter out 2008 due to retroactive marking
+data %&gt;% 
+  filter(year(updated) != 2008 &amp; status == &#39;read&#39;) %&gt;%
+  ggplot(aes(factor(year(updated)), fill = factor(chinese_ind))) +
+  geom_bar()</code></pre>
+<pre><code>## Warning in as.POSIXlt.POSIXct(x, tz = tz(x)): unknown timezone &#39;zone/tz/
+## 2018e.1.0/zoneinfo/America/New_York&#39;</code></pre>
+<p><img src="/post/2018-09-14-_files/figure-html/unnamed-chunk-11-1.png" width="672" /></p>
+<p>这里把2008筛掉是因为刚开始用豆瓣时标了不少小时候读的书。总的来说中文书比例在减小，最近买了一个新Kindle，绑定在中国亚马逊上希望能够改变一下这个趋势。</p>
+<p>每年读了多少页书呢？</p>
+<pre class="r"><code># pages of book read
+data %&gt;% 
+  filter(year(updated) != 2008 &amp; status == &#39;read&#39; &amp; !is.na(pages) &amp; pages &gt; 0) %&gt;%
+  mutate(read_year = year(updated)) %&gt;%
+  group_by(read_year)%&gt;%
+  summarise(total_page = sum(pages, na.rm = TRUE)) %&gt;%
+  ggplot(aes(x = read_year, y = total_page)) +
+  geom_line()</code></pre>
+<p><img src="/post/2018-09-14-_files/figure-html/unnamed-chunk-12-1.png" width="672" /></p>
+<p>2015特别少（书的数量也少），不知道为什么。另外能看出来2013年博士毕业以后，总体来说读书时间少了。</p>
+<p>平均每本书多少页呢？</p>
+<pre class="r"><code>data %&gt;% 
+  filter(year(updated) != 2008 &amp; status == &#39;read&#39; &amp; !is.na(pages) &amp; pages &gt; 0) %&gt;%
+  mutate(read_year = year(updated)) %&gt;%
+  group_by(read_year)%&gt;%
+  summarise(average_page = sum(pages, na.rm = TRUE)/n()) %&gt;%
+  ggplot(aes(x = read_year, y = average_page)) +
+  geom_line()</code></pre>
+<p><img src="/post/2018-09-14-_files/figure-html/unnamed-chunk-13-1.png" width="672" /></p>
+<p>还是一个下降趋势？</p>
+<p>仔细看看分布：</p>
+<pre class="r"><code># page distribution
+data %&gt;% 
+  filter(year(updated) != 2008 &amp; status == &#39;read&#39; &amp; !is.na(pages) &amp; pages &gt; 0) %&gt;%
+  mutate(read_year = year(updated)) %&gt;%
+  group_by(read_year)%&gt;%
+  ggplot(aes(x = read_year, y = pages, group = read_year)) +
+  geom_boxplot()</code></pre>
+<p><img src="/post/2018-09-14-_files/figure-html/unnamed-chunk-14-1.png" width="672" /></p>
+<p>2017看了一本好厚的书（左传附注）。2010那一堆厚书是金庸武侠。</p>
+<p>分语言看看书的厚度：</p>
+<pre class="r"><code># page distribution by language
+data %&gt;% 
+  filter(year(updated) != 2008 &amp; status == &#39;read&#39; &amp; !is.na(pages) &amp; pages &gt; 0) %&gt;%
+  mutate(read_year = year(updated)) %&gt;%
+  group_by(read_year, chinese_ind)%&gt;%
+  ggplot(aes(x = read_year
+             , y = pages
+             , group = read_year)) +
+  geom_boxplot() +
+  facet_grid(col = vars(chinese_ind))</code></pre>
+<p><img src="/post/2018-09-14-_files/figure-html/unnamed-chunk-15-1.png" width="672" /></p>
+<p>看看我看谁的书最多：</p>
+<pre class="r"><code># top 20 authors
+data %&gt;% 
+  filter(status == &#39;read&#39; &amp; !is.na(author)) %&gt;%
+  group_by(author) %&gt;%
+  tally() %&gt;%
+  top_n(20) %&gt;%
+  mutate(author = reorder(author, n)) %&gt;%
+  ggplot(aes(x = author, y = n)) +
+  geom_col() +
+  coord_flip() +
+  theme_grey(base_family = &quot;STKaiti&quot;)</code></pre>
+<p><img src="/post/2018-09-14-_files/figure-html/unnamed-chunk-16-1.png" width="672" /> 村上啊村上。</p>
+<p>最爱作家书厚度？</p>
+<pre class="r"><code># top 20 authors page distribution
+data %&gt;% 
+  filter(status == &#39;read&#39; &amp; !is.na(author)) %&gt;%
+  group_by(author) %&gt;%
+  tally() %&gt;%
+  top_n(20) %&gt;%
+  mutate(author = reorder(author, n)) %&gt;%
+  mutate(author = as.character(author)) %&gt;%
+  left_join(data, by = &quot;author&quot;) %&gt;%
+  filter(!is.na(pages) &amp; pages &gt; 0) -&gt; data_fav_author
+
+data_fav_author %&gt;%
+  group_by(author)%&gt;%
+  ggplot(aes(x = author, y = pages, group = author)) +
+  geom_boxplot() +
+  coord_flip() +
+  theme_grey(base_family = &quot;STKaiti&quot;)</code></pre>
+<p><img src="/post/2018-09-14-_files/figure-html/unnamed-chunk-17-1.png" width="672" /> 中文书和英文书厚度区别？</p>
+<pre class="r"><code># Is there a difference between chinese book number of pages and others(mainly english)?
+data %&gt;% 
+  filter(status == &#39;read&#39; &amp; !is.na(pages) &amp; pages &gt; 0) %&gt;%
+  mutate(chinese_ind_cat = if_else(chinese_ind == 1
+                                   , &quot;Chinese&quot;
+                                   , &quot;Others&quot;)) %&gt;%
+  group_by(chinese_ind_cat) %&gt;%
+  ggplot(aes(x = chinese_ind_cat, group = chinese_ind_cat, y = pages)) +
+  geom_violin()</code></pre>
+<p><img src="/post/2018-09-14-_files/figure-html/unnamed-chunk-18-1.png" width="672" /></p>
+<p>看来看中文长篇多。</p>
+<p>中文书和英文书评价数量区别？</p>
+<pre class="r"><code># Is there a difference between chinese book number of reviews and others(mainly english)?
+data %&gt;% 
+  filter(status == &#39;read&#39; &amp; !is.na(numRaters) &amp; numRaters &gt; 0) %&gt;%
+  mutate(chinese_ind_cat = if_else(chinese_ind == 1
+                                   , &quot;Chinese&quot;
+                                   , &quot;Others&quot;)) %&gt;%
+  group_by(chinese_ind_cat) %&gt;%
+  ggplot(aes(x = chinese_ind_cat, group = chinese_ind_cat, y = numRaters)) +
+  geom_boxplot()</code></pre>
+<p><img src="/post/2018-09-14-_files/figure-html/unnamed-chunk-19-1.png" width="672" /></p>
+<pre class="r"><code>data %&gt;% 
+  filter(status == &#39;read&#39; &amp; !is.na(numRaters) &amp; numRaters &gt; 0) %&gt;%
+  mutate(chinese_ind_cat = if_else(chinese_ind == 1
+                                   , &quot;Chinese&quot;
+                                   , &quot;Others&quot;)) %&gt;%
+  group_by(chinese_ind_cat) %&gt;%
+  summarise(trimmedMean = mean(numRaters, trim = 0.05),
+            quantile25 = quantile(numRaters, probs = 0.25),
+            quantile50 = quantile(numRaters, probs = 0.50),
+            quantile75 = quantile(numRaters, probs = 0.75))</code></pre>
+<pre><code>## # A tibble: 2 x 5
+##   chinese_ind_cat trimmedMean quantile25 quantile50 quantile75
+##   &lt;chr&gt;                 &lt;dbl&gt;      &lt;dbl&gt;      &lt;dbl&gt;      &lt;dbl&gt;
+## 1 Chinese               2950.         57        287      3094.
+## 2 Others                 160.          6         36       192</code></pre>
+<p>作为一个中文网站，还是评中文书的人多。</p>
+<p>平均评价那么有区别吗？</p>
+<pre class="r"><code># Is there a difference between chinese book average reviews and others(mainly english)?
+data %&gt;% 
+  filter(status == &#39;read&#39; &amp; !is.na(averageRate) &amp; numRaters &gt; 10) %&gt;%
+  mutate(chinese_ind_cat = if_else(chinese_ind == 1
+                                   , &quot;Chinese&quot;
+                                   , &quot;Others&quot;)) %&gt;%
+  group_by(chinese_ind_cat) %&gt;%
+  ggplot(aes(x = chinese_ind_cat, group = chinese_ind_cat, y = averageRate)) +
+  geom_boxplot()</code></pre>
+<p><img src="/post/2018-09-14-_files/figure-html/unnamed-chunk-20-1.png" width="672" /></p>
+<pre class="r"><code>data %&gt;% 
+  filter(status == &#39;read&#39; &amp; !is.na(averageRate) &amp; numRaters &gt; 10) %&gt;%
+  mutate(chinese_ind_cat = if_else(chinese_ind == 1
+                                   , &quot;Chinese&quot;
+                                   , &quot;Others&quot;)) %&gt;%
+  group_by(chinese_ind_cat) %&gt;%
+  summarise(mean = mean(averageRate),
+            quantile25 = quantile(averageRate, probs = 0.25),
+            quantile50 = quantile(averageRate, probs = 0.50),
+            quantile75 = quantile(averageRate, probs = 0.75))</code></pre>
+<pre><code>## # A tibble: 2 x 5
+##   chinese_ind_cat  mean quantile25 quantile50 quantile75
+##   &lt;chr&gt;           &lt;dbl&gt;      &lt;dbl&gt;      &lt;dbl&gt;      &lt;dbl&gt;
+## 1 Chinese          8.39        8          8.5        8.9
+## 2 Others           8.59        8.2        8.6        9.1</code></pre>
+<p>貌似我看的书评价都还挺高，外文略高些。</p>
+<p>书的厚度和评价有关吗？</p>
+<pre class="r"><code># ralationship between number of pages and average rate
+
+data %&gt;% 
+  filter(status == &#39;read&#39; 
+         &amp; !is.na(averageRate) 
+         &amp; numRaters &gt; 10 
+         &amp; !is.na(pages)
+         &amp; pages &gt; 0) %&gt;%
+  mutate(chinese_ind_cat = if_else(chinese_ind == 1
+                                   , &quot;Chinese&quot;
+                                   , &quot;Others&quot;)) %&gt;%
+  group_by(chinese_ind_cat) %&gt;%
+  ggplot(aes(x = pages, y = averageRate, weight = sqrt(numRaters))) +
+  geom_point(aes(size = sqrt(numRaters)
+                 , color = chinese_ind_cat)) +
+  geom_smooth(span = 0.4)</code></pre>
+<pre><code>## `geom_smooth()` using method = &#39;loess&#39; and formula &#39;y ~ x&#39;</code></pre>
+<p><img src="/post/2018-09-14-_files/figure-html/unnamed-chunk-21-1.png" width="672" /> 对于比较薄的的书(&lt;1000页)， 似乎有一个最高点在500页处。对于厚书，数据太少，但是貌似有上升趋势。也许决定看并且评价厚书的人本身就比较喜欢那些书吧（否则不是自我折磨）。</p>
+<p>豆瓣数据我觉得最缺的还是更好的分类，有了更好的图书分类，也许能有更多有趣的分析。</p>
