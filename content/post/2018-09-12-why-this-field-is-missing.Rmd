@@ -6,7 +6,8 @@ slug: why-this-field-is-missing
 categories:
   - data analysis
 tags:
-  - missing data, insurance
+  - missing data
+  - insurance
 ---
 
 One of the daily challenge for someone who works with data is missing data. After a few years working with historical data (which means it is not captured for your analysis), I noticed that data was seldom missing at random and understanding how/why it is missing could be very important for the analysis (especially when your analysis would have significant impact and needs to be carefully validated).
