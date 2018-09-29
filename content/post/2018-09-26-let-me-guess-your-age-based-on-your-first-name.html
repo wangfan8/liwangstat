@@ -1,0 +1,85 @@
+---
+title: Let me guess your age based on your first name
+author: Li Wang
+date: '2018-09-26'
+slug: let-me-guess-your-age-based-on-your-first-name
+categories:
+  - data analysis
+  - R
+tags:
+  - R
+---
+
+
+
+<p>This whole post was inspired by <a href="https://twitter.com/CMastication?ref_src=twsrc%5Egoogle%7Ctwcamp%5Eserp%7Ctwgr%5Eauthor">JD Long</a>’s following <a href="https://twitter.com/CMastication/status/1043098519190548481">tweet</a> and Jonathan Nollis’s followup blog <a href="https://towardsdatascience.com/guessing-the-year-you-were-born-from-baby-names-using-r-17c8cbb8d0a5">post</a>.</p>
+<p>As Jonathan pointed out, it is not easy to identify a specific year just based on first name along, which leads me to a less ambitious goal: can we get the conditional distribution of birth year based on first name?</p>
+<p><a href="http://hadley.nz/">Hadley Wickham</a> has published a pretty convenient R <a href="https://cran.r-project.org/web/packages/babynames/index.html">package</a> including US babies’s first names(used at least 5 times) from 1880-2015 from <a href="https://www.ssa.gov/">SSA</a>. In order to compute my conditional probability though, I need more data besides the number of babies with each name each year, namely, I need to define the population out of which I got the first name from (even one name is very popular in 1880, we would not guess someone is 138 years old, right?).</p>
+<p>Luckily, I can find the recent population age distribution from census website<a href="https://www2.census.gov/programs-surveys/popest/technical-documentation/file-layouts/2010-2017/nc-est2017-agesex-res.pdf">file layout</a> <a href="https://www2.census.gov/programs-surveys/popest/technical-documentation/file-layouts/2010-2017/nc-est2017-agesex-res.pdf">data</a>. As Hadley’s package only includes names to 2015, I’ll take the easy way and assume that we are looking at people’s first name in 2015 (which means we’ll use 2015’s population age distribution and names data from from 1915-2015).</p>
+<p>The calculation is a straight forward application of Bayes’s Theroem:</p>
+<p><span class="math inline">\(P(birth year | name) = P(name | birth year) * P(birth year) / P(name)\)</span></p>
+<p><span class="math inline">\(P(name | birth year)\)</span> can be estimated(as there might be people who did not apply SS and thus name not captured) from the proportition of people with name of the whole population. <span class="math inline">\(P(birth year)\)</span> is from above Census source. <span class="math inline">\(P(name)\)</span> can be computed as <span class="math inline">\(\sum P(name | birth year) * P(birth year)\)</span>.</p>
+<p>Here is the R code:</p>
+<pre class="r"><code>library(babynames)
+library(tidyverse)
+
+nc_est2017_agesex_res &lt;- read_csv(&quot;data/nc-est2017-agesex-res.csv&quot;)
+
+nc_est2017_agesex_res %&gt;% 
+  filter(SEX == 0 &amp; AGE != 999) %&gt;%
+  select(AGE, POPESTIMATE2015) -&gt; us_age_distribution_2015
+
+# compute the probability of meeting someone born in certain year in 2015
+us_age_distribution_2015 %&gt;%
+  mutate(born_year = 2015 - AGE) %&gt;%
+  mutate(total_pop = sum(POPESTIMATE2015)) %&gt;%
+  mutate(prob_born_year = POPESTIMATE2015/total_pop) %&gt;%
+  select(born_year, prob_born_year)-&gt; us_age_distribution_2015
+
+babynames %&gt;%
+  filter(year &gt;= 1915) %&gt;%
+  select(year, sex, name, n) %&gt;%
+  group_by(year, name) %&gt;%
+  summarise(n_babies = sum(n)) %&gt;%
+  ungroup() %&gt;%
+  group_by(year) %&gt;%
+  mutate(year_total = sum(n_babies)) %&gt;%
+  mutate(prop = n_babies / year_total) %&gt;%
+  select(year, name, n = n_babies , prop) -&gt; babynames_new
+
+# compute the marginal probability of meeting someone named X 
+babynames_new %&gt;%
+  left_join(us_age_distribution_2015
+            , by = c(&quot;year&quot; = &quot;born_year&quot;)) -&gt;babynames_new
+
+babynames_new %&gt;%
+  mutate(joint_prob = prop * prob_born_year) %&gt;%
+  group_by(name) %&gt;%
+  summarise(prob_name = sum(joint_prob)) -&gt; prob_name
+
+# attach back to baby name data set
+babynames_new %&gt;%
+  left_join(prob_name) -&gt; babynames_new
+
+# now we can get the conditional distribution of the age of
+# someone we met in 2015 with a specific name
+babynames_new %&gt;%
+  mutate(cond_prob = prop * prob_born_year / prob_name) %&gt;%
+  arrange(name) -&gt; babynames_new</code></pre>
+<p>Let’s see some examples:</p>
+<p>Mike:</p>
+<pre class="r"><code>babynames_new %&gt;%
+  filter(name == &quot;Mike&quot;) %&gt;%
+  ggplot(aes(x = year, y = cond_prob)) +
+  geom_area()</code></pre>
+<div class="figure">
+<img src="/post/2018-09-26-let-me-guess-your-age-based-on-your-first-name_files/Mike.jpeg" />
+
+</div>
+<p>How about Juan?</p>
+<div class="figure">
+<img src="/post/2018-09-26-let-me-guess-your-age-based-on-your-first-name_files/Juan.jpeg" />
+
+</div>
+<p>If you are interested in further explore this, I’ve also make a <a href="https://wangfan8.shinyapps.io/AgeGuesser/">Shiny web application</a> that you can explore by typing any name. The initial loading can be a little slow due to reading in a large file.</p>
+<p>Enjoy!</p>
